@@ -1,0 +1,20 @@
+[project]
+name = "dfa-tags"
+version = "0.1.0"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=2.0.2",
+    "shapely>=2.0.7",
+    "svgpathtools>=1.7.1",
+    "lxml",
+    "svg.path",
+    "networkx",
+    "rtree",
+    "mapbox_earcut",
+    "triangle",
+    "cairosvg",
+    "pillow",
+    "scikit-image",
+    "trimesh>=4.9.0",
+]
+
