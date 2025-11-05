@@ -4,7 +4,6 @@
 *.step
 *.obj
 *.ply
-*.3mf
 *.amf
 *.gcode
 *.gco
@@ -52,7 +51,6 @@
 *.neu2
 
 # Vector Graphics
-*.svg
 *.ai
 *.eps
 *.pdf
