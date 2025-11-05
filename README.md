@@ -42,6 +42,7 @@ python update_svgs.py
 ```
 
 **What it does:**
+
 - Converts viewBox from `"0 0 90 90"` to `"0 0 140 140"`
 - Adds mask structure with center hole at (70, 70)
 - Wraps content in `translate(25,25)` transform
@@ -50,6 +51,7 @@ python update_svgs.py
 - Skips files that already have the new format (idempotent)
 
 **When to use it:**
+
 - If you have SVG files with 90x90 viewBox that need to be converted
 - If you need to add the mask/hole structure to existing SVGs
 - Before running `convert_svgs_to_3mf.py` on old-format files
@@ -58,18 +60,45 @@ python update_svgs.py
 
 ## Quick Start
 
-Convert all SVGs to 3MF files (default):
+### Batch Processing
 
+The script automatically processes multiple files in batch. By default, it processes all matching SVG files in the input directory.
+
+**Convert all SVGs in the `svg/` directory:**
+```bash
+uv run python convert_svgs_to_3mf.py --input-dir svg --pattern "*.svg" --overwrite
+```
+
+**Convert all default pattern files (tagStandard41h12-*.svg):**
+```bash
+uv run python convert_svgs_to_3mf.py --input-dir svg --overwrite
+```
+
+**Convert a range of files (e.g., 0-10):**
+```bash
+# Process files 0-10 individually using a loop
+for i in {0..10}; do
+  uv run python convert_svgs_to_3mf.py --input-dir svg --pattern "tagStandard41h12-$i.svg" --overwrite
+done
+```
+
+Or process all files and let the script handle them:
+```bash
+uv run python convert_svgs_to_3mf.py --input-dir svg --pattern "tagStandard41h12-*.svg" --overwrite
+```
+
+**Convert from current directory (default):**
 ```bash
 uv run python convert_svgs_to_3mf.py --overwrite
 ```
 
-This will:
-- Read all `tagStandard41h12-*.svg` files from the current directory
-- Export 3MF files to the `3mf/` directory
-- Use 3mm height
+The script will:
+- Process all matching SVG files sequentially
+- Export 3MF files to the `3mf/` directory (or `--output-dir` if specified)
+- Use 3mm height (default)
 - Create circular tags with 70mm radius
 - Include a 4mm radius center hole
+- Show progress and summary (e.g., "Converted 10/11 SVGs")
 
 ## Usage
 
