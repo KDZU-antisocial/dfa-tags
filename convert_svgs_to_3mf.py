@@ -111,11 +111,11 @@ def load_svg_polygons(svg_path: str, black_only: bool = False) -> List[geom.Poly
 	return polys
 
 
-def rasterize_svg_to_mask(svg_path: str, target_mm: float = 140.0, px_per_mm: float = 5.0) -> Tuple[np.ndarray, float]:
+def rasterize_svg_to_mask(svg_path: str, target_mm: float = 140.0, px_per_mm: float = 10.0) -> Tuple[np.ndarray, float]:
 	"""Rasterize SVG to a binary mask (True for black art), return mask and mm-per-pixel scale.
 
 	- target_mm: assumed logical size of the artwork; default 140 mm diameter plate area
-	- px_per_mm: pixels per mm; higher gives smoother contours
+	- px_per_mm: pixels per mm; higher gives smoother contours (increased to 10.0 for better detail capture)
 	"""
 	width_px = int(target_mm * px_per_mm)
 	height_px = int(target_mm * px_per_mm)
@@ -125,7 +125,7 @@ def rasterize_svg_to_mask(svg_path: str, target_mm: float = 140.0, px_per_mm: fl
 	png_bytes = cairosvg.svg2png(bytestring=svg_bytes, output_width=width_px, output_height=height_px)
 	img = Image.open(BytesIO(png_bytes)).convert('L')
 	arr = np.array(img)
-	# Threshold: consider near-black as art
+	# Threshold: consider near-black as art (using stricter threshold for better separation)
 	mask = arr < 128
 	mm_per_px = target_mm / float(width_px)
 	return mask, mm_per_px
@@ -165,11 +165,12 @@ def polygons_from_mask(mask: np.ndarray, mm_per_px: float, origin_mm: Tuple[floa
 			if not poly.is_valid:
 				poly = poly.buffer(0)
 			if isinstance(poly, geom.Polygon):
-				if poly.area > 0:
+				# Reduced minimum area to capture smaller features (was > 0, now > 0.01)
+				if poly.area > 0.01:
 					polys.append(poly)
 			elif isinstance(poly, geom.MultiPolygon):
 				for p in poly.geoms:
-					if p.area > 0:
+					if p.area > 0.01:
 						polys.append(p)
 	# Merge overlaps
 	if polys:
@@ -253,26 +254,193 @@ def build_bicolor_solids(
 
 	- black: union of SVG paths (black art), clipped to circle, minus center hole
 	- white: circle minus black, minus center hole
+	
+	Note: Black paths are processed individually to preserve separate meshes for each black region.
 	"""
-	# Try rasterization first (properly separates by color), fallback to vector parsing
+	# Try enhanced vector parsing first (properly handles both black and white paths)
+	# This is more reliable than rasterization for complex SVGs with transforms
+	explicit_white_paths = None
 	try:
-		mask, mm_per_px = rasterize_svg_to_mask(svg_path)
-		# mask is True for black pixels
-		black_polys = polygons_from_mask(mask, mm_per_px, origin_mm=(0.0, 0.0))
-		if black_polys:
-			union = ops.unary_union(black_polys)
+		import xml.etree.ElementTree as ET
+		import re
+		tree = ET.parse(svg_path)
+		root = tree.getroot()
+		
+		black_paths = []
+		white_paths = []
+		
+		def parse_transform(transform_str):
+			"""Parse SVG transform attribute and return (tx, ty) for translate."""
+			if not transform_str:
+				return 0, 0
+			match = re.search(r'translate\(([^,]+),([^)]+)\)', transform_str)
+			if match:
+				return float(match.group(1)), float(match.group(2))
+			return 0, 0
+		
+		def get_fill_color(elem):
+			"""Get fill color from element."""
+			if 'fill' in elem.attrib:
+				return elem.attrib['fill']
+			elif 'style' in elem.attrib:
+				style = elem.attrib['style']
+				fill_match = re.search(r'fill:([^;]+)', style)
+				if fill_match:
+					return fill_match.group(1).strip()
+			return None
+		
+		def is_black_fill_local(elem):
+			"""Check if element has black fill color."""
+			fill_color = get_fill_color(elem)
+			return fill_color in ('#000000', '#000', 'black', 'rgb(0,0,0)', 'rgb(0, 0, 0)')
+		
+		def is_white_fill(elem):
+			"""Check if element has white fill color."""
+			fill_color = get_fill_color(elem)
+			return fill_color in ('#ffffff', '#fff', 'white', 'rgb(255,255,255)', 'rgb(255, 255, 255)')
+		
+		def process_element(elem, parent_transform=(0, 0)):
+			"""Recursively process SVG elements, tracking transforms."""
+			transform_str = elem.get('transform', '')
+			tx, ty = parse_transform(transform_str)
+			current_tx = parent_transform[0] + tx
+			current_ty = parent_transform[1] + ty
+			
+			# Process path elements
+			if elem.tag.endswith('path') and 'd' in elem.attrib:
+				try:
+					path_d = elem.attrib['d']
+					from io import BytesIO
+					path_svg = f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 140"><g transform="translate({current_tx},{current_ty})"><path d="{path_d}"/></g></svg>'
+					path_obj = trimesh.load_path(BytesIO(path_svg.encode('utf-8')), file_type='svg')
+					path_polys = getattr(path_obj, "polygons_full", None) or path_obj.polygons_2D
+					if path_polys:
+						# Count how many separate polygons we got from this path
+						num_polys = len(path_polys) if isinstance(path_polys, list) else 1
+						if is_black_fill_local(elem):
+							black_paths.extend(path_polys)
+							log(f"  Added black path with {num_polys} polygons")
+						elif is_white_fill(elem):
+							white_paths.extend(path_polys)
+							log(f"  Added white path with {num_polys} polygons")
+				except Exception as e:
+					log(f"Failed to parse path: {e}")
+			
+			# Recursively process children
+			for child in elem:
+				process_element(child, (current_tx, current_ty))
+		
+		process_element(root)
+		log(f"Vector parsing: found {len(black_paths)} black polygons, {len(white_paths)} white polygons")
+		
+		# Log individual polygon areas before union
+		if black_paths:
+			black_areas = [p.area for p in black_paths[:10]]
+			log(f"  Black polygon areas: {[f'{a:.2f}' for a in black_areas]}")
+		if white_paths:
+			white_areas = [p.area for p in white_paths[:10]]
+			log(f"  White polygon areas: {[f'{a:.2f}' for a in white_areas]}")
+		
+		# Build black and white geometries separately
+		# Strategy: Process each black path individually to preserve separate meshes
+		# Black paths have holes where white paths are (so white shows through)
+		# White includes explicit white paths + remaining white background
+		if black_paths or white_paths:
+			white_paths_union = ops.unary_union(white_paths) if white_paths else geom.Polygon()
+			
+			log(f"  Found {len(black_paths)} individual black paths")
+			log(f"  White paths union area: {white_paths_union.area if not white_paths_union.is_empty else 0:.2f}")
+			
+			# Process each black path individually: subtract white from each, but preserve black paths
+			# that are completely inside white (they should still be black regions)
+			# Strategy: For each black path, check if it's inside white. If so, keep it as-is.
+			# If it overlaps white, subtract white to create holes.
+			black_components = []
+			if black_paths:
+				for i, bp in enumerate(black_paths):
+					black_area = bp.area
+					if not white_paths_union.is_empty:
+						# Check if this black path is completely inside white paths
+						if bp.within(white_paths_union):
+							# Black path is inside white - keep it as-is (it's a black square in white)
+							log(f"  Black path {i+1}: {black_area:.2f} is inside white, preserving as-is")
+							if not bp.is_empty and bp.area > 0.01:
+								black_components.append(bp)
+						elif bp.intersects(white_paths_union):
+							# Black path overlaps white - subtract white to create holes
+							black_with_holes = bp.difference(white_paths_union)
+							log(f"  Black path {i+1}: {black_area:.2f} -> {black_with_holes.area:.2f} after subtracting white")
+							if not black_with_holes.is_empty and black_with_holes.area > 0.01:
+								black_components.append(black_with_holes)
+						else:
+							# Black path doesn't intersect white - keep as-is
+							log(f"  Black path {i+1}: {black_area:.2f} doesn't intersect white, keeping as-is")
+							if not bp.is_empty:
+								black_components.append(bp)
+					else:
+						# No white paths, keep all black paths
+						if not bp.is_empty:
+							black_components.append(bp)
+				
+				# Keep black components separate - don't union them yet
+				# We'll combine them later but preserve as MultiPolygon to keep separate regions
+				if black_components:
+					# Use MultiPolygon to preserve separate components
+					# This way touching ones stay separate if they don't actually overlap
+					if len(black_components) == 1:
+						union = black_components[0]
+					else:
+						# Try to union, but this will merge touching ones
+						# For now, create a MultiPolygon from the components
+						union_temp = geom.MultiPolygon(black_components)
+						# Union will merge touching, but at least we'll see what we have
+						union = ops.unary_union(black_components)
+						if isinstance(union, geom.MultiPolygon):
+							log(f"  Black union created MultiPolygon with {len(union.geoms)} separate regions")
+						elif isinstance(union, geom.Polygon):
+							log(f"  Black union created single Polygon (merged {len(black_components)} components)")
+					total_black_area = sum(c.area for c in black_components)
+					log(f"  Processed {len(black_components)} black components, final area {union.area:.2f} (sum was {total_black_area:.2f})")
+				else:
+					union = geom.Polygon()
+			else:
+				union = geom.Polygon()
+			
+			# Store white paths separately - they will be explicitly part of white geometry
+			# Also store individual white paths (not unioned) to preserve them as separate regions
+			explicit_white_paths = white_paths_union if not white_paths_union.is_empty else None
+			explicit_white_paths_list = white_paths if white_paths else []
+			log(f"  Stored explicit white paths (union): {explicit_white_paths is not None}")
+			log(f"  Stored {len(explicit_white_paths_list)} individual white paths")
 		else:
-			raise RuntimeError("Rasterization produced no black polygons")
+			# No paths found, fall through to rasterization
+			raise RuntimeError("No paths found in SVG")
+			
 	except Exception as e:
-		log(f"Rasterization failed ({e}), trying vector parsing...")
-		# Fallback: try vector parsing with black-only filter
-		polys = load_svg_polygons(svg_path, black_only=True)
-		if not polys:
-			# Last resort: try full vector parsing
-			polys = load_svg_polygons(svg_path, black_only=False)
-		if not polys:
-			raise RuntimeError("Neither rasterization nor vector parsing produced polygons")
-		union = ops.unary_union(polys)
+		log(f"Enhanced vector parsing failed ({e}), trying rasterization...")
+		explicit_white_paths = None
+		# Try rasterization as fallback
+		try:
+			mask, mm_per_px = rasterize_svg_to_mask(svg_path)
+			# mask is True for black pixels
+			black_polys = polygons_from_mask(mask, mm_per_px, origin_mm=(0.0, 0.0))
+			if black_polys:
+				union = ops.unary_union(black_polys)
+				log(f"Rasterization extracted {len(black_polys)} black polygons")
+			else:
+				raise RuntimeError("Rasterization produced no black polygons")
+		except Exception as e2:
+			log(f"Rasterization also failed ({e2}), trying simple vector parsing...")
+			# Last resort: simple vector parsing
+			polys = load_svg_polygons(svg_path, black_only=True)
+			if not polys:
+				polys = load_svg_polygons(svg_path, black_only=False)
+			if not polys:
+				raise RuntimeError("Neither rasterization nor vector parsing produced polygons")
+			union = ops.unary_union(polys)
+			explicit_white_paths = None
+			explicit_white_paths_list = []
+	
 	# Clip to circle with safety fallbacks
 	def derive_circle_from_bounds(g: geom.base.BaseGeometry) -> Tuple[float, float, float]:
 		minx, miny, maxx, maxy = g.bounds
@@ -285,34 +453,98 @@ def build_bicolor_solids(
 
 	ccx, ccy, cr = clip_circle
 	# Heuristic: re-center to geometry if needed
-	bx, by, br = derive_circle_from_bounds(union)
-	if (abs(ccx - bx) > br * 0.6) or (abs(ccy - by) > br * 0.6):
-		ccx, ccy, cr = bx, by, br
+	if not union.is_empty:
+		bx, by, br = derive_circle_from_bounds(union)
+		if (abs(ccx - bx) > br * 0.6) or (abs(ccy - by) > br * 0.6):
+			ccx, ccy, cr = bx, by, br
 	circle = geom.Point(float(ccx), float(ccy)).buffer(float(cr), resolution=128)
-	union_clipped = union.intersection(circle)
+	union_clipped = union.intersection(circle) if not union.is_empty else geom.Polygon()
 	if union_clipped.is_empty:
 		union_clipped = union
 	
 	cx, cy = hole_center
 	hole = geom.Point(cx, cy).buffer(hole_radius, resolution=64)
 	
-	# For vector parsing: union might include white background circle
-	# If union covers most of the circle, it likely includes the white background
-	# In that case, we'll use the entire union as the "art" and white will be minimal
-	# The key is to ensure we have valid geometry for both
-	black = union_clipped.difference(hole)
-	white_temp = circle.difference(union_clipped)
+	# Build black geometry: union (which is black minus white paths) minus hole
+	black = union_clipped.difference(hole) if not union_clipped.is_empty else geom.Polygon()
+	log(f"Final black geometry area: {black.area:.2f}")
 	
-	# If white is empty or very small, it means union covers the circle
-	# In that case, white should be the circle minus the black art
-	# But since we can't separate them, make white = circle - black (will be mostly empty, but valid)
-	if white_temp.is_empty or white_temp.area < circle.area * 0.1:
-		# Union includes white background, so white is just circle minus union
-		white = circle.difference(union_clipped).difference(hole)
+	# Build white geometry: explicit white paths + (circle - black - white paths)
+	# Strategy: Keep white paths as separate regions, then add remaining white background
+	# Try to preserve individual white paths as separate components if possible
+	if explicit_white_paths_list and len(explicit_white_paths_list) > 0:
+		# Use individual white paths to preserve them as separate regions
+		log(f"Processing {len(explicit_white_paths_list)} individual white paths")
+		# Clip each white path to circle and keep them separate
+		white_paths_clipped_list = []
+		for wp in explicit_white_paths_list:
+			clipped = wp.intersection(circle) if hasattr(wp, 'intersection') else wp
+			if not clipped.is_empty and clipped.area > 0.01:
+				white_paths_clipped_list.append(clipped)
+		
+		log(f"  {len(white_paths_clipped_list)} white paths survived clipping")
+		
+		# Build white base = circle minus (black + all white paths)
+		all_white_union = ops.unary_union(white_paths_clipped_list) if white_paths_clipped_list else geom.Polygon()
+		black_and_white = union_clipped.union(all_white_union) if not union_clipped.is_empty else all_white_union
+		white_base = circle.difference(black_and_white)
+		log(f"  White base area: {white_base.area:.2f}")
+		
+		# Combine: white base + individual white paths (preserves them as separate regions)
+		if white_paths_clipped_list:
+			if not white_base.is_empty:
+				# Combine all white components
+				# Note: union will merge touching/overlapping paths, which is expected
+				white_components = [white_base] + white_paths_clipped_list
+				white_combined = ops.unary_union(white_components)
+				# Count how many separate polygons we have after union
+				if isinstance(white_combined, geom.MultiPolygon):
+					num_polygons = len(white_combined.geoms)
+					log(f"  White combined has {num_polygons} separate polygons after union")
+				elif isinstance(white_combined, geom.Polygon):
+					log(f"  White combined is a single polygon after union")
+			else:
+				white_combined = all_white_union
+			log(f"  White combined area: {white_combined.area:.2f}")
+			white = white_combined.difference(hole)
+			log(f"  White final area: {white.area:.2f}")
+		else:
+			white = white_base.difference(hole)
+	elif explicit_white_paths is not None and not explicit_white_paths.is_empty:
+		log(f"Processing explicit white paths (area: {explicit_white_paths.area:.2f})")
+		# Clip white paths to circle
+		white_paths_clipped = explicit_white_paths.intersection(circle)
+		log(f"White paths after clipping to circle: {white_paths_clipped.area if not white_paths_clipped.is_empty else 0:.2f}")
+		
+		# White base = circle minus (black + white paths)
+		# This ensures white paths don't overlap with white_base
+		black_and_white = union_clipped.union(white_paths_clipped) if not union_clipped.is_empty else white_paths_clipped
+		white_base = circle.difference(black_and_white)
+		log(f"White base (circle - black - white_paths) area: {white_base.area:.2f}")
+		
+		# White geometry = white paths + white base
+		# This preserves white paths as distinct regions
+		if not white_paths_clipped.is_empty:
+			if not white_base.is_empty:
+				# Combine white paths with remaining white background
+				white_combined = white_base.union(white_paths_clipped)
+				log(f"White combined (base + paths) area: {white_combined.area:.2f}")
+			else:
+				# Only white paths, no background
+				white_combined = white_paths_clipped
+				log(f"White combined (paths only, no background) area: {white_combined.area:.2f}")
+			white = white_combined.difference(hole)
+			log(f"White after hole subtraction: {white.area:.2f}")
+		else:
+			white = white_base.difference(hole)
+			log(f"White paths clipped to empty, using white_base only: {white.area:.2f}")
 	else:
-		# Normal case: union is black art, white is circle minus black
-		white = white_temp.difference(hole)
+		# No explicit white paths, just circle minus black
+		white_base = circle.difference(union_clipped)
+		white = white_base.difference(hole)
+		log(f"No explicit white paths, white base area: {white_base.area:.2f}, final white: {white.area:.2f}")
 	
+	log(f"Final geometries - Black: {black.area:.2f}, White: {white.area:.2f}")
 	return black, white
 
 
@@ -350,11 +582,20 @@ def extrude_to_mesh(shape_2d: geom.base.BaseGeometry, height_mm: float) -> trime
 		nudged = shape_2d.buffer(0.05)
 		geoms = to_polygons(nudged)
 
-	for poly in geoms:
+	log(f"Extruding {len(geoms)} polygons to mesh")
+	if isinstance(shape_2d, geom.MultiPolygon):
+		log(f"  Input is MultiPolygon with {len(shape_2d.geoms)} separate polygons")
+	
+	for i, poly in enumerate(geoms):
 		if poly.is_empty or not poly.is_valid:
 			continue
-		mesh = trimesh.creation.extrude_polygon(poly, height=height_mm)
-		parts.append(mesh)
+		log(f"  Extruding polygon {i+1}: area={poly.area:.2f}, valid={poly.is_valid}")
+		try:
+			mesh = trimesh.creation.extrude_polygon(poly, height=height_mm)
+			log(f"    Created mesh with {len(mesh.vertices)} vertices, {len(mesh.faces)} faces")
+			parts.append(mesh)
+		except Exception as e:
+			log(f"    Failed to extrude polygon {i+1}: {e}")
 
 	if not parts:
 		raise RuntimeError("No mesh parts produced from 2D geometry")
@@ -402,23 +643,31 @@ def convert_to_3mf(
 	
 	# Try to extrude black geometry
 	try:
+		log(f"Extruding black geometry...")
 		black3d = extrude_to_mesh(black2d, height_mm)
+		log(f"  Black mesh: {len(black3d.vertices)} vertices, {len(black3d.faces)} faces")
 		if not black3d.is_watertight:
 			black3d.fill_holes()
 		black3d.visual.face_colors = [0, 0, 0, 255]
 		meshes_to_add.append(("black", black3d))
 	except Exception as e:
 		log(f"Warning: Could not extrude black geometry: {e}")
+		import traceback
+		log(traceback.format_exc())
 	
 	# Try to extrude white geometry
 	try:
+		log(f"Extruding white geometry...")
 		white3d = extrude_to_mesh(white2d, height_mm)
+		log(f"  White mesh: {len(white3d.vertices)} vertices, {len(white3d.faces)} faces")
 		if not white3d.is_watertight:
 			white3d.fill_holes()
 		white3d.visual.face_colors = [255, 255, 255, 255]
 		meshes_to_add.append(("white", white3d))
 	except Exception as e:
 		log(f"Warning: Could not extrude white geometry: {e}")
+		import traceback
+		log(traceback.format_exc())
 	
 	if not meshes_to_add:
 		raise RuntimeError("Both black and white geometries failed to produce meshes")

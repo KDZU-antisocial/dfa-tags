@@ -1,0 +1,15 @@
+[SVG23MF] tagStandard41h12-0.svg -> tagStandard41h12-0.3mf (height=3.0mm)
+Vector parsing: found 2 black paths, 10 white paths
+  Black path polygons: [1, 1]
+  White path polygons: [1, 1, 1, 1, 1]
+  Black union area: 6700.00
+  White paths union area: 3900.00
+  Black after subtracting white: 4200.00
+  Stored explicit white paths: True
+Final black geometry area: 4200.00
+White base (circle - black) area: 11193.42
+Adding explicit white paths (area: 3900.00) to white geometry
+White paths after clipping to circle: 3900.00
+White after union with explicit paths: 11143.16
+Final geometries - Black: 4200.00, White: 11143.16
+Done. Converted 1/1 SVGs to 3MF in /Users/rob/Documents/GitHub/dfa-tags/3mf
