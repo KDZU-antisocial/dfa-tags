@@ -260,6 +260,7 @@ def build_bicolor_solids(
 	# Try enhanced vector parsing first (properly handles both black and white paths)
 	# This is more reliable than rasterization for complex SVGs with transforms
 	explicit_white_paths = None
+	explicit_white_paths_list = []  # Initialize early to avoid UnboundLocalError
 	try:
 		import xml.etree.ElementTree as ET
 		import re
@@ -353,17 +354,37 @@ def build_bicolor_solids(
 			
 			# Process each black path individually: subtract white from each, but preserve black paths
 			# that are completely inside white (they should still be black regions)
-			# Strategy: For each black path, check if it's inside white. If so, keep it as-is.
+			# Strategy: For each black path, check if it's inside ANY white path. If so, keep it as-is.
 			# If it overlaps white, subtract white to create holes.
 			black_components = []
 			if black_paths:
 				for i, bp in enumerate(black_paths):
 					black_area = bp.area
-					if not white_paths_union.is_empty:
-						# Check if this black path is completely inside white paths
-						if bp.within(white_paths_union):
+					if not white_paths_union.is_empty and white_paths:
+						# Check if this black path is completely inside ANY individual white path
+						# Use multiple methods: within(), covers(), or intersection equals black
+						is_inside_white = False
+						for wp in white_paths:
+							# Try within() first (most reliable)
+							if bp.within(wp):
+								is_inside_white = True
+								log(f"  Black path {i+1}: {black_area:.2f} is inside white path (within), preserving as-is")
+								break
+							# Also check if white covers black (same relationship, different perspective)
+							elif wp.covers(bp):
+								is_inside_white = True
+								log(f"  Black path {i+1}: {black_area:.2f} is inside white path (covers), preserving as-is")
+								break
+							# Check if intersection equals the black path (black is fully contained)
+							elif not bp.is_empty:
+								intersection = bp.intersection(wp)
+								if not intersection.is_empty and abs(intersection.area - bp.area) < 0.1:
+									is_inside_white = True
+									log(f"  Black path {i+1}: {black_area:.2f} is inside white path (intersection), preserving as-is")
+									break
+						
+						if is_inside_white:
 							# Black path is inside white - keep it as-is (it's a black square in white)
-							log(f"  Black path {i+1}: {black_area:.2f} is inside white, preserving as-is")
 							if not bp.is_empty and bp.area > 0.01:
 								black_components.append(bp)
 						elif bp.intersects(white_paths_union):
@@ -385,22 +406,25 @@ def build_bicolor_solids(
 				# Keep black components separate - don't union them yet
 				# We'll combine them later but preserve as MultiPolygon to keep separate regions
 				if black_components:
-					# Use MultiPolygon to preserve separate components
-					# This way touching ones stay separate if they don't actually overlap
-					if len(black_components) == 1:
-						union = black_components[0]
+					# Flatten any MultiPolygons in the components list before unioning
+					flat_components = []
+					for comp in black_components:
+						if isinstance(comp, geom.MultiPolygon):
+							flat_components.extend(comp.geoms)
+						elif isinstance(comp, geom.Polygon):
+							flat_components.append(comp)
+					
+					if len(flat_components) == 1:
+						union = flat_components[0]
 					else:
-						# Try to union, but this will merge touching ones
-						# For now, create a MultiPolygon from the components
-						union_temp = geom.MultiPolygon(black_components)
-						# Union will merge touching, but at least we'll see what we have
-						union = ops.unary_union(black_components)
+						# Union the flattened components
+						union = ops.unary_union(flat_components)
 						if isinstance(union, geom.MultiPolygon):
 							log(f"  Black union created MultiPolygon with {len(union.geoms)} separate regions")
 						elif isinstance(union, geom.Polygon):
-							log(f"  Black union created single Polygon (merged {len(black_components)} components)")
-					total_black_area = sum(c.area for c in black_components)
-					log(f"  Processed {len(black_components)} black components, final area {union.area:.2f} (sum was {total_black_area:.2f})")
+							log(f"  Black union created single Polygon (merged {len(flat_components)} components)")
+					total_black_area = sum(c.area for c in flat_components)
+					log(f"  Processed {len(flat_components)} black components, final area {union.area:.2f} (sum was {total_black_area:.2f})")
 				else:
 					union = geom.Polygon()
 			else:
@@ -419,6 +443,7 @@ def build_bicolor_solids(
 	except Exception as e:
 		log(f"Enhanced vector parsing failed ({e}), trying rasterization...")
 		explicit_white_paths = None
+		explicit_white_paths_list = []  # Initialize here too
 		# Try rasterization as fallback
 		try:
 			mask, mm_per_px = rasterize_svg_to_mask(svg_path)
