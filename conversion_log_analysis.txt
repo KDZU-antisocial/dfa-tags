@@ -1,42 +1,44 @@
-[SVG23MF] tagStandard41h12-0.svg -> tagStandard41h12-0.3mf (height=3.0mm)
+[SVG23MF] tagStandard41h12-1.svg -> tagStandard41h12-1.3mf (height=3.0mm)
   Added white path with 1 polygons
   Added black path with 1 polygons
-  Added white path with 4 polygons
+  Added white path with 5 polygons
   Added black path with 1 polygons
   Added white path with 5 polygons
-Vector parsing: found 2 black polygons, 10 white polygons
-  Black polygon areas: ['6700.00', '400.00']
-  White polygon areas: ['200.00', '400.00', '100.00', '2500.00', '100.00', '100.00', '100.00', '200.00', '100.00', '100.00']
+Vector parsing: found 2 black polygons, 11 white polygons
+  Black polygon areas: ['6300.00', '200.00']
+  White polygon areas: ['200.00', '400.00', '100.00', '100.00', '2500.00', '200.00', '100.00', '100.00', '200.00', '100.00']
   Found 2 individual black paths
-  White paths union area: 3900.00
-  Black path 1: 6700.00 -> 4200.00 after subtracting white
-  Black path 2: 400.00 is inside white, preserving as-is
-  Black union created MultiPolygon with 2 separate regions
-  Processed 2 black components, final area 4600.00 (sum was 4600.00)
+  White paths union area: 4300.00
+  Black path 1: 6300.00 -> 3800.00 after subtracting white
+  Black path 2: 200.00 is inside white path (within), preserving as-is
+  Black union created MultiPolygon with 3 separate regions
+  Processed 3 black components, final area 4000.00 (sum was 4000.00)
   Stored explicit white paths (union): True
-  Stored 10 individual white paths
-Final black geometry area: 4549.74
-Processing 10 individual white paths
-  10 white paths survived clipping
+  Stored 11 individual white paths
+Final black geometry area: 4000.00
+Processing 11 individual white paths
+  11 white paths survived clipping
   White base area: 7293.42
   White combined has 2 separate polygons after union
-  White combined area: 11193.42
-  White final area: 11143.16
-Final geometries - Black: 4549.74, White: 11143.16
+  White combined area: 11593.42
+  White final area: 11543.16
+Final geometries - Black: 4000.00, White: 11543.16
 Extruding black geometry...
-Extruding 2 polygons to mesh
-  Input is MultiPolygon with 2 separate polygons
-  Extruding polygon 1: area=4200.00, valid=True
-    Created mesh with 80 vertices, 156 faces
-  Extruding polygon 2: area=349.74, valid=True
-    Created mesh with 530 vertices, 1512 faces
-  Black mesh: 610 vertices, 1668 faces
+Extruding 3 polygons to mesh
+  Input is MultiPolygon with 3 separate polygons
+  Extruding polygon 1: area=3700.00, valid=True
+    Created mesh with 76 vertices, 1288 faces
+  Extruding polygon 2: area=200.00, valid=True
+    Created mesh with 14 vertices, 412 faces
+  Extruding polygon 3: area=100.00, valid=True
+    Created mesh with 8 vertices, 212 faces
+  Black mesh: 98 vertices, 1912 faces
 Extruding white geometry...
 Extruding 2 polygons to mesh
   Input is MultiPolygon with 2 separate polygons
-  Extruding polygon 1: area=8693.42, valid=True
-    Created mesh with 1096 vertices, 2192 faces
+  Extruding polygon 1: area=9093.42, valid=True
+    Created mesh with 1098 vertices, 3624 faces
   Extruding polygon 2: area=2449.74, valid=True
     Created mesh with 520 vertices, 1040 faces
-  White mesh: 1616 vertices, 3232 faces
+  White mesh: 1618 vertices, 4664 faces
 Done. Converted 1/1 SVGs to 3MF in /Users/rob/Documents/GitHub/dfa-tags/3mf

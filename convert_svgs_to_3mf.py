@@ -261,6 +261,7 @@ def build_bicolor_solids(
 	# This is more reliable than rasterization for complex SVGs with transforms
 	explicit_white_paths = None
 	explicit_white_paths_list = []  # Initialize early to avoid UnboundLocalError
+	black_squares_inside_white = []  # Track black paths inside white to subtract from white geometry
 	try:
 		import xml.etree.ElementTree as ET
 		import re
@@ -356,7 +357,9 @@ def build_bicolor_solids(
 			# that are completely inside white (they should still be black regions)
 			# Strategy: For each black path, check if it's inside ANY white path. If so, keep it as-is.
 			# If it overlaps white, subtract white to create holes.
+			# IMPORTANT: Track black squares inside white so we can subtract them from white geometry
 			black_components = []
+			black_squares_inside_white = []  # Track black paths that are inside white
 			if black_paths:
 				for i, bp in enumerate(black_paths):
 					black_area = bp.area
@@ -385,8 +388,11 @@ def build_bicolor_solids(
 						
 						if is_inside_white:
 							# Black path is inside white - keep it as-is (it's a black square in white)
+							# Also track it so we can subtract it from white geometry
 							if not bp.is_empty and bp.area > 0.01:
 								black_components.append(bp)
+								black_squares_inside_white.append(bp)
+								log(f"  Tracked black square inside white for subtraction from white geometry")
 						elif bp.intersects(white_paths_union):
 							# Black path overlaps white - subtract white to create holes
 							black_with_holes = bp.difference(white_paths_union)
@@ -432,10 +438,12 @@ def build_bicolor_solids(
 			
 			# Store white paths separately - they will be explicitly part of white geometry
 			# Also store individual white paths (not unioned) to preserve them as separate regions
+			# Also store black squares inside white so we can subtract them from white geometry
 			explicit_white_paths = white_paths_union if not white_paths_union.is_empty else None
 			explicit_white_paths_list = white_paths if white_paths else []
 			log(f"  Stored explicit white paths (union): {explicit_white_paths is not None}")
 			log(f"  Stored {len(explicit_white_paths_list)} individual white paths")
+			log(f"  Tracked {len(black_squares_inside_white)} black squares inside white to subtract from white geometry")
 		else:
 			# No paths found, fall through to rasterization
 			raise RuntimeError("No paths found in SVG")
@@ -444,6 +452,7 @@ def build_bicolor_solids(
 		log(f"Enhanced vector parsing failed ({e}), trying rasterization...")
 		explicit_white_paths = None
 		explicit_white_paths_list = []  # Initialize here too
+		black_squares_inside_white = []  # Initialize here too
 		# Try rasterization as fallback
 		try:
 			mask, mm_per_px = rasterize_svg_to_mask(svg_path)
@@ -465,6 +474,7 @@ def build_bicolor_solids(
 			union = ops.unary_union(polys)
 			explicit_white_paths = None
 			explicit_white_paths_list = []
+			black_squares_inside_white = []
 	
 	# Clip to circle with safety fallbacks
 	def derive_circle_from_bounds(g: geom.base.BaseGeometry) -> Tuple[float, float, float]:
@@ -509,13 +519,53 @@ def build_bicolor_solids(
 		
 		log(f"  {len(white_paths_clipped_list)} white paths survived clipping")
 		
-		# Build white base = circle minus (black + all white paths)
+		# Subtract black squares from white paths - they should not be part of white geometry
+		if black_squares_inside_white:
+			black_squares_union = ops.unary_union(black_squares_inside_white)
+			log(f"  Subtracting {len(black_squares_inside_white)} black squares from white paths")
+			# Subtract black squares from each white path
+			white_paths_without_black = []
+			for wp in white_paths_clipped_list:
+				wp_minus_black = wp.difference(black_squares_union)
+				if not wp_minus_black.is_empty and wp_minus_black.area > 0.01:
+					# Handle MultiPolygon results from difference
+					if isinstance(wp_minus_black, geom.MultiPolygon):
+						white_paths_without_black.extend(wp_minus_black.geoms)
+					elif isinstance(wp_minus_black, geom.Polygon):
+						white_paths_without_black.append(wp_minus_black)
+			white_paths_clipped_list = white_paths_without_black
+			log(f"  White paths after subtracting black squares: {len(white_paths_clipped_list)}")
+		
+		# Build white base = circle minus (ALL black components including black squares inside white)
+		# First, get ALL black components (including black squares inside white)
+		all_black_components = []
+		if not union_clipped.is_empty:
+			# Flatten union_clipped if it's a MultiPolygon
+			if isinstance(union_clipped, geom.MultiPolygon):
+				all_black_components.extend(union_clipped.geoms)
+			elif isinstance(union_clipped, geom.Polygon):
+				all_black_components.append(union_clipped)
+		
+		# Add black squares inside white to the black components
+		if black_squares_inside_white:
+			all_black_components.extend(black_squares_inside_white)
+		
+		# Union all black components (this includes black squares inside white)
+		if all_black_components:
+			all_black_union = ops.unary_union(all_black_components)
+		else:
+			all_black_union = geom.Polygon()
+		
+		# White base = circle minus (all black + all white paths)
+		# Note: white paths already have black squares subtracted from them
 		all_white_union = ops.unary_union(white_paths_clipped_list) if white_paths_clipped_list else geom.Polygon()
-		black_and_white = union_clipped.union(all_white_union) if not union_clipped.is_empty else all_white_union
-		white_base = circle.difference(black_and_white)
-		log(f"  White base area: {white_base.area:.2f}")
+		everything_black_and_white = all_black_union.union(all_white_union) if not all_white_union.is_empty else all_black_union
+		
+		white_base = circle.difference(everything_black_and_white)
+		log(f"  White base area: {white_base.area:.2f} (should exclude black squares inside white)")
 		
 		# Combine: white base + individual white paths (preserves them as separate regions)
+		# Note: both white_base and white paths already have black squares subtracted from them
 		if white_paths_clipped_list:
 			if not white_base.is_empty:
 				# Combine all white components
