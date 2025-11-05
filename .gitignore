@@ -149,10 +149,6 @@ Thumbs.db
 .AppleDouble
 .LSOverride
 
-# Output directories (keep structure but ignore contents)
-svg/*.svg
-3mf/*.3mf
-stl/*.stl
 
 # But keep .gitkeep files
 !.gitkeep
