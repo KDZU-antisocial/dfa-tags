@@ -162,3 +162,7 @@ stl/*.stl
 !3mf/.gitkeep
 !stl/.gitkeep
 
+# Conversion logs
+conversion_log*.txt
+*.log
+
