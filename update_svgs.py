@@ -1,4 +1,20 @@
 #!/usr/bin/env python3
+"""
+Convert 90x90 viewBox SVG files to 140x140 format with mask/hole structure.
+
+This script transforms old-format SVGs (90x90 viewBox) to the new format that
+convert_svgs_to_3mf.py expects:
+- Converts viewBox from "0 0 90 90" to "0 0 140 140"
+- Adds mask structure with center hole at (70, 70)
+- Wraps content in translate(25,25) transform
+- Removes old-style holes at (45, 45)
+
+Usage:
+    python update_svgs.py
+
+Processes files: tagStandard41h12-13.svg through tagStandard41h12-99.svg
+Skips files that already have the new format.
+"""
 import glob, re, os
 
 OPEN_TAG_RE = re.compile(r'^<svg[^>]*viewBox="0 0 90 90"[^>]*>\s*', re.S)
